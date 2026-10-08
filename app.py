@@ -25,6 +25,22 @@ def save_to_wardrobe(item):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(wardrobe, f, ensure_ascii=False, indent=2)
 
+def delete_from_wardrobe(item_id):
+    wardrobe = load_wardrobe()
+    item_to_remove = next((it for it in wardrobe if it["id"] == item_id), None)
+    if item_to_remove:
+        # Görseli diskten de temizleyelim (gereksiz yer kaplamasın)
+        img_path = item_to_remove.get("image_path", "")
+        if img_path and os.path.exists(img_path):
+            try:
+                os.remove(img_path)
+            except Exception:
+                pass
+        # Listeden filtrele
+        updated = [it for it in wardrobe if it["id"] != item_id]
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(updated, f, ensure_ascii=False, indent=2)
+
 def analyze_clothing(img: Image.Image, key: str, mode: str):
     client = genai.Client(api_key=key)
     
@@ -149,7 +165,6 @@ tab_add, tab_wardrobe, tab_outfit = st.tabs(["Kıyafet Ekle", "Gardırobum", "Ko
 with tab_add:
     st.subheader("Yeni Kıyafet Yükle")
     
-    # Kullanıcı fotoğraf tipini seçer
     photo_mode = st.radio("Fotoğraf Tipi:", ["Tek Parça (Tişört, Pantolon vb.)", "Kombin / Boydan Görsel"], horizontal=True)
     mode_clean = "Tek Parça" if "Tek Parça" in photo_mode else "Kombin"
 
@@ -245,16 +260,20 @@ with tab_wardrobe:
     else:
         for it in reversed(items):
             with st.container(border=True):
-                col_img, col_info = st.columns([1, 2])
+                col_img, col_info, col_del = st.columns([1, 2, 0.7])
                 with col_img:
                     if os.path.exists(it.get("image_path", "")):
                         st.image(it["image_path"], use_container_width=True)
                     else:
-                        st.caption("Görsel bulunamadı")
+                        st.caption("Görsel yok")
                 with col_info:
                     st.markdown(f"**{it.get('item_name', '')}**")
                     st.caption(f"Kategori: {it.get('category', '')} | Renk: {it.get('color', '')}")
                     st.caption(f"Tarz: {it.get('style', '')} | Kalıp: {it.get('fit', '')} | Mevsim: {it.get('season', '')}")
+                with col_del:
+                    if st.button("Sil", key=f"del_{it['id']}"):
+                        delete_from_wardrobe(it["id"])
+                        st.rerun()
 
 with tab_outfit:
     st.subheader("Kişisel Kombin Önerisi")
