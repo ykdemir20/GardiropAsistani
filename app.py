@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+from io import BytesIO
 import streamlit as st
 from PIL import Image
 from google import genai
@@ -25,13 +26,13 @@ def save_to_wardrobe(item):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(wardrobe, f, ensure_ascii=False, indent=2)
 
-def analyze_clothing(image: Image.Image, api_key: str):
-    client = genai.Client(api_key=api_key)
+def analyze_clothing(img: Image.Image, key: str):
+    client = genai.Client(api_key=key)
     prompt = """
     Bu fotoğraftaki kıyafeti analiz et ve STRICT şekilde aşağıdaki JSON formatında döndür:
     {
       "category": "Üst Giyim" | "Alt Giyim" | "Dış Giyim" | "Ayakkabı" | "Aksesuar",
-      "item_name": "Kıyafetin kısa adı (örn: Kahverengi Fermuarlı Ceket)",
+      "item_name": "Kıyafetin kısa adı (örn: Kahverengi Ceket)",
       "color": "Ana renk",
       "style": "Streetwear" | "Casual" | "Smart Casual" | "Spor",
       "season": "Yazlık" | "Kışlık" | "Mevsimlik",
@@ -40,13 +41,11 @@ def analyze_clothing(image: Image.Image, api_key: str):
     """
     response = client.models.generate_content(
         model="gemini-3.1-flash-lite",
-        contents=[image, prompt],
+        contents=[img, prompt],
         config=types.GenerateContentConfig(
             response_mime_type="application/json"
         )
     )
-    
-    # Modelden dönen metni garantiye alıp Python dict formatına çeviriyoruz
     text = response.text.strip()
     if text.startswith("```json"):
         text = text[7:]
@@ -58,11 +57,17 @@ st.title("Dijital Gardırop")
 
 api_key = os.environ.get("GEMINI_API_KEY")
 if not api_key:
-    api_key = st.text_input("Gemini API Anahtarı", type="password", help="aistudio.google.com üzerinden alabilirsiniz.")
+    api_key = st.text_input("Gemini API Anahtarı", type="password")
 
 if not api_key:
     st.info("Devam etmek için Gemini API anahtarınızı girin.")
     st.stop()
+
+# Session State Hazırlığı
+if "current_image" not in st.session_state:
+    st.session_state["current_image"] = None
+if "analyzed_data" not in st.session_state:
+    st.session_state["analyzed_data"] = None
 
 tab_add, tab_wardrobe = st.tabs(["Kıyafet Ekle", "Gardırobum"])
 
@@ -70,49 +75,48 @@ with tab_add:
     st.subheader("Yeni Kıyafet Yükle")
     uploaded_file = st.file_uploader("Fotoğraf seç veya çek", type=["jpg", "jpeg", "png"])
 
+    # Yeni dosya seçildiyse state'e al
     if uploaded_file is not None:
-        image = Image.open(uploaded_file)
-        st.image(image, caption="Yüklenen Parça", use_container_width=True)
+        st.session_state["current_image"] = Image.open(uploaded_file)
+
+    if st.session_state["current_image"] is not None:
+        st.image(st.session_state["current_image"], caption="Yüklenen Parça", use_container_width=True)
 
         if st.button("Gemini ile Analiz Et", type="primary"):
             with st.spinner("Kıyafet analiz ediliyor..."):
                 try:
-                    result = analyze_clothing(image, api_key)
-                    # Gelen verinin kesinlikle dict olduğunu teyit ediyoruz
-                    if isinstance(result, str):
-                        result = json.loads(result)
-                    st.session_state["analyzed_data"] = result
-                    st.session_state["analyzed_image_name"] = uploaded_file.name
-                    st.rerun()
+                    res = analyze_clothing(st.session_state["current_image"], api_key)
+                    if isinstance(res, str):
+                        res = json.loads(res)
+                    st.session_state["analyzed_data"] = res
                 except Exception as e:
-                    st.error(f"Analiz sırasında hata oluştu: {e}")
+                    st.error(f"Hata: {e}")
 
-    # Kullanıcı Onay ve Düzenleme Formu
-    if "analyzed_data" in st.session_state and isinstance(st.session_state["analyzed_data"], dict):
+    # Analiz tamamlandıysa form kalıcı olarak burada durur
+    if st.session_state["analyzed_data"] is not None and st.session_state["current_image"] is not None:
         st.divider()
         st.subheader("Bilgileri Doğrula & Kaydet")
         data = st.session_state["analyzed_data"]
 
-        with st.form("verify_form"):
-            categories = ["Dış Giyim", "Üst Giyim", "Alt Giyim", "Ayakkabı", "Aksesuar"]
-            styles = ["Casual", "Streetwear", "Smart Casual", "Spor"]
-            seasons = ["Mevsimlik", "Yazlık", "Kışlık"]
-            fits = ["Regular", "Oversize", "Slim Fit", "Baggy"]
+        categories = ["Dış Giyim", "Üst Giyim", "Alt Giyim", "Ayakkabı", "Aksesuar"]
+        styles = ["Casual", "Streetwear", "Smart Casual", "Spor"]
+        seasons = ["Mevsimlik", "Yazlık", "Kışlık"]
+        fits = ["Regular", "Oversize", "Slim Fit", "Baggy"]
 
-            raw_cat = data.get("category", "")
-            cat_idx = categories.index(raw_cat) if raw_cat in categories else 0
+        raw_cat = data.get("category", "")
+        cat_idx = categories.index(raw_cat) if raw_cat in categories else 0
 
-            raw_style = data.get("style", "")
-            style_idx = styles.index(raw_style) if raw_style in styles else 0
+        raw_style = data.get("style", "")
+        style_idx = styles.index(raw_style) if raw_style in styles else 0
 
-            raw_season = data.get("season", "")
-            season_idx = seasons.index(raw_season) if raw_season in seasons else 0
+        raw_season = data.get("season", "")
+        season_idx = seasons.index(raw_season) if raw_season in seasons else 0
 
-            raw_fit = data.get("fit", "")
-            fit_idx = fits.index(raw_fit) if raw_fit in fits else 0
+        raw_fit = data.get("fit", "")
+        fit_idx = fits.index(raw_fit) if raw_fit in fits else 0
 
+        with st.form("save_form"):
             item_name = st.text_input("Parça İsmi", value=str(data.get("item_name", "Kıyafet")))
-            
             col1, col2 = st.columns(2)
             with col1:
                 category = st.selectbox("Kategori", categories, index=cat_idx)
@@ -122,13 +126,13 @@ with tab_add:
                 style = st.selectbox("Tarz", styles, index=style_idx)
                 season = st.selectbox("Mevsim", seasons, index=season_idx)
 
-            submit = st.form_submit_button("Gardıroba Kaydet")
+            save_btn = st.form_submit_button("Gardıroba Kaydet")
 
-            if submit:
+            if save_btn:
                 os.makedirs("clothing_images", exist_ok=True)
                 img_id = str(uuid.uuid4())[:8]
-                saved_img_path = f"clothing_images/{img_id}_{st.session_state.get('analyzed_image_name', 'item.png')}"
-                image.save(saved_img_path)
+                saved_path = f"clothing_images/{img_id}.png"
+                st.session_state["current_image"].save(saved_path)
 
                 final_item = {
                     "id": img_id,
@@ -138,12 +142,12 @@ with tab_add:
                     "style": style,
                     "season": season,
                     "fit": fit,
-                    "image_path": saved_img_path
+                    "image_path": saved_path
                 }
                 save_to_wardrobe(final_item)
-                st.success(f"'{item_name}' gardıroba başarıyla eklendi!")
-                del st.session_state["analyzed_data"]
-                st.rerun()
+                st.session_state["analyzed_data"] = None
+                st.session_state["current_image"] = None
+                st.success(f"'{item_name}' başarıyla gardıroba eklendi!")
 
 with tab_wardrobe:
     st.subheader("Kayıtlı Parçalar")
