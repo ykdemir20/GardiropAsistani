@@ -25,23 +25,42 @@ def save_to_wardrobe(item):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(wardrobe, f, ensure_ascii=False, indent=2)
 
-def analyze_clothing(img: Image.Image, key: str):
+def analyze_clothing(img: Image.Image, key: str, mode: str):
     client = genai.Client(api_key=key)
-    prompt = """
-    Bu fotoğrafta görünen TÜM kıyafet ve aksesuar parçalarını (üst giyim, alt giyim, dış giyim, ayakkabı, şapka/çanta vb.) ayrı ayrı tespit et.
-    Her bir parçayı STRICT şekilde aşağıdaki JSON formatında bir LISTE olarak döndür:
-    [
-      {
-        "category": "Üst Giyim" | "Alt Giyim" | "Dış Giyim" | "Ayakkabı" | "Aksesuar",
-        "item_name": "Kıyafetin kısa ve belirgin adı (örn: Gri Kapüşonlu Sweatshirt)",
-        "color": "Ana renk",
-        "style": "Streetwear" | "Casual" | "Smart Casual" | "Spor",
-        "season": "Yazlık" | "Kışlık" | "Mevsimlik",
-        "fit": "Oversize" | "Regular" | "Slim Fit" | "Baggy"
-      }
-    ]
-    Eğer fotoğrafta sadece tek bir kıyafet varsa, yine de liste içinde tek bir eleman olarak döndür.
-    """
+    
+    if mode == "Tek Parça":
+        prompt = """
+        Görseldeki MERKEZDE ve ODAKTA yer alan TEK ANA KIYAFETİ analiz et.
+        Arka plandaki mobilya, yatak, halı, askılık gibi ilgisiz nesneleri KESİNLİKLE YOK SAY.
+        Yanıtı STRICT şekilde tek elemanlı bir JSON listesi olarak döndür:
+        [
+          {
+            "category": "Üst Giyim" | "Alt Giyim" | "Dış Giyim" | "Ayakkabı" | "Aksesuar",
+            "item_name": "Kıyafetin kısa adı (örn: Adaçayı Yeşili Oversize Tişört)",
+            "color": "Ana renk",
+            "style": "Streetwear" | "Casual" | "Smart Casual" | "Spor",
+            "season": "Yazlık" | "Kışlık" | "Mevsimlik",
+            "fit": "Oversize" | "Regular" | "Slim Fit" | "Baggy"
+          }
+        ]
+        """
+    else:
+        prompt = """
+        Bu fotoğrafta kişinin ÜZERİNDE GİYİLİ olan kombindeki ana parçaları (Üst Giyim, Alt Giyim, Dış Giyim, Ayakkabı) tespit et.
+        UYARI: Arka plandaki oda eşyalarını, mobilyaları, kapıyı, aynayı, yerdeki nesneleri ASLA kıyafet olarak ekleme. Sadece giyilen gerçek kıyafetleri al.
+        Her bir parçayı STRICT şekilde aşağıdaki JSON formatında bir liste olarak döndür:
+        [
+          {
+            "category": "Üst Giyim" | "Alt Giyim" | "Dış Giyim" | "Ayakkabı" | "Aksesuar",
+            "item_name": "Kıyafetin kısa adı",
+            "color": "Ana renk",
+            "style": "Streetwear" | "Casual" | "Smart Casual" | "Spor",
+            "season": "Yazlık" | "Kışlık" | "Mevsimlik",
+            "fit": "Oversize" | "Regular" | "Slim Fit" | "Baggy"
+          }
+        ]
+        """
+        
     response = client.models.generate_content(
         model="gemini-3.1-flash-lite",
         contents=[img, prompt],
@@ -56,7 +75,6 @@ def analyze_clothing(img: Image.Image, key: str):
         raw = raw[:-3]
     parsed = json.loads(raw.strip())
     
-    # Her ihtimale karşı tek obje geldiyse listeye çevir
     if isinstance(parsed, dict):
         return [parsed]
     elif isinstance(parsed, list):
@@ -130,6 +148,11 @@ tab_add, tab_wardrobe, tab_outfit = st.tabs(["Kıyafet Ekle", "Gardırobum", "Ko
 
 with tab_add:
     st.subheader("Yeni Kıyafet Yükle")
+    
+    # Kullanıcı fotoğraf tipini seçer
+    photo_mode = st.radio("Fotoğraf Tipi:", ["Tek Parça (Tişört, Pantolon vb.)", "Kombin / Boydan Görsel"], horizontal=True)
+    mode_clean = "Tek Parça" if "Tek Parça" in photo_mode else "Kombin"
+
     uploaded_file = st.file_uploader("Fotoğraf seç veya çek", type=["jpg", "jpeg", "png"])
 
     if uploaded_file is not None:
@@ -139,20 +162,18 @@ with tab_add:
         st.image(st.session_state["current_image"], caption="Yüklenen Fotoğraf", use_container_width=True)
 
         if st.button("Fotoğrafı Analiz Et", type="primary"):
-            with st.spinner("Fotoğraftaki parçalar ayrıştırılıyor..."):
+            with st.spinner("Fotoğraf taranıyor..."):
                 try:
-                    res = analyze_clothing(st.session_state["current_image"], api_key)
+                    res = analyze_clothing(st.session_state["current_image"], api_key, mode_clean)
                     st.session_state["analyzed_items"] = res
                 except Exception as e:
                     st.error(f"Hata: {e}")
 
-    # Tespit edilen parçaları liste halinde onaylatma
     if st.session_state["analyzed_items"] and st.session_state["current_image"] is not None:
         st.divider()
         st.subheader(f"Tespit Edilen Parçalar ({len(st.session_state['analyzed_items'])} adet)")
-        st.caption("Kaydetmek istemediğin parçaları silebilir veya düzenleyebilirsin.")
 
-        categories = ["Dış Giyim", "Üst Giyim", "Alt Giyim", "Ayakkabı", "Aksesuar"]
+        categories = ["Üst Giyim", "Alt Giyim", "Dış Giyim", "Ayakkabı", "Aksesuar"]
         styles = ["Casual", "Streetwear", "Smart Casual", "Spor"]
         seasons = ["Mevsimlik", "Yazlık", "Kışlık"]
         fits = ["Regular", "Oversize", "Slim Fit", "Baggy"]
@@ -191,7 +212,7 @@ with tab_add:
                 })
                 st.write("---")
 
-            save_all_btn = st.form_submit_button("Tüm Parçaları Gardıroba Ekle")
+            save_all_btn = st.form_submit_button("Gardıroba Kaydet")
 
             if save_all_btn:
                 os.makedirs("clothing_images", exist_ok=True)
