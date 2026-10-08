@@ -1,7 +1,6 @@
 import os
 import json
 import uuid
-from io import BytesIO
 import streamlit as st
 from PIL import Image
 from google import genai
@@ -29,7 +28,7 @@ def save_to_wardrobe(item):
 def analyze_clothing(img: Image.Image, key: str):
     client = genai.Client(api_key=key)
     prompt = """
-    Bu fotoğraftaki kıyafeti analiz et ve STRICT şekilde aşağıdaki JSON formatında döndür:
+    Bu fotoğraftaki kıyafeti analiz et ve STRICT şekilde sadece aşağıdaki JSON formatında tek bir nesne olarak döndür:
     {
       "category": "Üst Giyim" | "Alt Giyim" | "Dış Giyim" | "Ayakkabı" | "Aksesuar",
       "item_name": "Kıyafetin kısa adı (örn: Kahverengi Ceket)",
@@ -46,12 +45,17 @@ def analyze_clothing(img: Image.Image, key: str):
             response_mime_type="application/json"
         )
     )
-    text = response.text.strip()
-    if text.startswith("```json"):
-        text = text[7:]
-    if text.endswith("```"):
-        text = text[:-3]
-    return json.loads(text.strip())
+    raw = response.text.strip()
+    if raw.startswith("```json"):
+        raw = raw[7:]
+    if raw.endswith("```"):
+        raw = raw[:-3]
+    parsed = json.loads(raw.strip())
+    
+    # Model cevabı liste içinde döndürdüyse ilk elemanı al
+    if isinstance(parsed, list) and len(parsed) > 0:
+        parsed = parsed[0]
+    return parsed if isinstance(parsed, dict) else {}
 
 st.title("Dijital Gardırop")
 
@@ -63,7 +67,6 @@ if not api_key:
     st.info("Devam etmek için Gemini API anahtarınızı girin.")
     st.stop()
 
-# Session State Hazırlığı
 if "current_image" not in st.session_state:
     st.session_state["current_image"] = None
 if "analyzed_data" not in st.session_state:
@@ -75,7 +78,6 @@ with tab_add:
     st.subheader("Yeni Kıyafet Yükle")
     uploaded_file = st.file_uploader("Fotoğraf seç veya çek", type=["jpg", "jpeg", "png"])
 
-    # Yeni dosya seçildiyse state'e al
     if uploaded_file is not None:
         st.session_state["current_image"] = Image.open(uploaded_file)
 
@@ -86,14 +88,12 @@ with tab_add:
             with st.spinner("Kıyafet analiz ediliyor..."):
                 try:
                     res = analyze_clothing(st.session_state["current_image"], api_key)
-                    if isinstance(res, str):
-                        res = json.loads(res)
                     st.session_state["analyzed_data"] = res
                 except Exception as e:
                     st.error(f"Hata: {e}")
 
-    # Analiz tamamlandıysa form kalıcı olarak burada durur
-    if st.session_state["analyzed_data"] is not None and st.session_state["current_image"] is not None:
+    # Analiz verisi dict olarak geldiyse formu oluştur
+    if isinstance(st.session_state["analyzed_data"], dict) and st.session_state["current_image"] is not None:
         st.divider()
         st.subheader("Bilgileri Doğrula & Kaydet")
         data = st.session_state["analyzed_data"]
@@ -103,16 +103,16 @@ with tab_add:
         seasons = ["Mevsimlik", "Yazlık", "Kışlık"]
         fits = ["Regular", "Oversize", "Slim Fit", "Baggy"]
 
-        raw_cat = data.get("category", "")
+        raw_cat = str(data.get("category", ""))
         cat_idx = categories.index(raw_cat) if raw_cat in categories else 0
 
-        raw_style = data.get("style", "")
+        raw_style = str(data.get("style", ""))
         style_idx = styles.index(raw_style) if raw_style in styles else 0
 
-        raw_season = data.get("season", "")
+        raw_season = str(data.get("season", ""))
         season_idx = seasons.index(raw_season) if raw_season in seasons else 0
 
-        raw_fit = data.get("fit", "")
+        raw_fit = str(data.get("fit", ""))
         fit_idx = fits.index(raw_fit) if raw_fit in fits else 0
 
         with st.form("save_form"):
@@ -166,4 +166,4 @@ with tab_wardrobe:
                 with col_info:
                     st.markdown(f"**{it.get('item_name', '')}**")
                     st.caption(f"Kategori: {it.get('category', '')} | Renk: {it.get('color', '')}")
-                    st.caption(f"Tarz: {it.get('style', '')} | Kalıp: {it.get('fit', '')} | Mevsim: {it.get('season', '')}")
+                    st.caption(f"Tarz:
