@@ -16,7 +16,7 @@ def load_wardrobe():
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except json.JSONDecodeError:
+    except Exception:
         return []
 
 def save_to_wardrobe(item):
@@ -45,9 +45,14 @@ def analyze_clothing(image: Image.Image, api_key: str):
             response_mime_type="application/json"
         )
     )
-    return json.loads(response.text)
-
-
+    
+    # Modelden dönen metni garantiye alıp Python dict formatına çeviriyoruz
+    text = response.text.strip()
+    if text.startswith("```json"):
+        text = text[7:]
+    if text.endswith("```"):
+        text = text[:-3]
+    return json.loads(text.strip())
 
 st.title("Dijital Gardırop")
 
@@ -70,36 +75,48 @@ with tab_add:
         st.image(image, caption="Yüklenen Parça", use_container_width=True)
 
         if st.button("Gemini ile Analiz Et", type="primary"):
-            with st.spinner("Kıyafet taranıyor ve analiz ediliyor..."):
+            with st.spinner("Kıyafet analiz ediliyor..."):
                 try:
                     result = analyze_clothing(image, api_key)
+                    # Gelen verinin kesinlikle dict olduğunu teyit ediyoruz
+                    if isinstance(result, str):
+                        result = json.loads(result)
                     st.session_state["analyzed_data"] = result
                     st.session_state["analyzed_image_name"] = uploaded_file.name
-                    st.success("Analiz tamamlandı! Aşağıdaki bilgileri kontrol edip onaylayın.")
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Analiz sırasında hata oluştu: {e}")
 
-    if "analyzed_data" in st.session_state:
+    # Kullanıcı Onay ve Düzenleme Formu
+    if "analyzed_data" in st.session_state and isinstance(st.session_state["analyzed_data"], dict):
         st.divider()
         st.subheader("Bilgileri Doğrula & Kaydet")
         data = st.session_state["analyzed_data"]
 
         with st.form("verify_form"):
+            categories = ["Dış Giyim", "Üst Giyim", "Alt Giyim", "Ayakkabı", "Aksesuar"]
+            styles = ["Casual", "Streetwear", "Smart Casual", "Spor"]
+            seasons = ["Mevsimlik", "Yazlık", "Kışlık"]
+            fits = ["Regular", "Oversize", "Slim Fit", "Baggy"]
+
+            raw_cat = data.get("category", "")
+            cat_idx = categories.index(raw_cat) if raw_cat in categories else 0
+
+            raw_style = data.get("style", "")
+            style_idx = styles.index(raw_style) if raw_style in styles else 0
+
+            raw_season = data.get("season", "")
+            season_idx = seasons.index(raw_season) if raw_season in seasons else 0
+
+            raw_fit = data.get("fit", "")
+            fit_idx = fits.index(raw_fit) if raw_fit in fits else 0
+
+            item_name = st.text_input("Parça İsmi", value=str(data.get("item_name", "Kıyafet")))
+            
             col1, col2 = st.columns(2)
-            categories = ["Üst Giyim", "Alt Giyim", "Dış Giyim", "Ayakkabı", "Aksesuar"]
-            styles = ["Streetwear", "Casual", "Smart Casual", "Spor"]
-            seasons = ["Yazlık", "Kışlık", "Mevsimlik"]
-            fits = ["Oversize", "Regular", "Slim Fit", "Baggy"]
-
-            cat_idx = categories.index(data.get("category")) if data.get("category") in categories else 0
-            style_idx = styles.index(data.get("style")) if data.get("style") in styles else 0
-            season_idx = seasons.index(data.get("season")) if data.get("season") in seasons else 0
-            fit_idx = fits.index(data.get("fit")) if data.get("fit") in fits else 0
-
-            item_name = st.text_input("Parça İsmi", value=data.get("item_name", ""))
             with col1:
                 category = st.selectbox("Kategori", categories, index=cat_idx)
-                color = st.text_input("Ana Renk", value=data.get("color", ""))
+                color = st.text_input("Ana Renk", value=str(data.get("color", "")))
                 fit = st.selectbox("Kalıp", fits, index=fit_idx)
             with col2:
                 style = st.selectbox("Tarz", styles, index=style_idx)
@@ -143,6 +160,6 @@ with tab_wardrobe:
                     else:
                         st.caption("Görsel bulunamadı")
                 with col_info:
-                    st.markdown(f"**{it['item_name']}**")
-                    st.caption(f"Kategori: {it['category']} | Renk: {it['color']}")
-                    st.caption(f"Tarz: {it['style']} | Kalıp: {it['fit']} | Mevsim: {it['season']}")
+                    st.markdown(f"**{it.get('item_name', '')}**")
+                    st.caption(f"Kategori: {it.get('category', '')} | Renk: {it.get('color', '')}")
+                    st.caption(f"Tarz: {it.get('style', '')} | Kalıp: {it.get('fit', '')} | Mevsim: {it.get('season', '')}")
