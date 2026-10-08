@@ -51,11 +51,59 @@ def analyze_clothing(img: Image.Image, key: str):
     if raw.endswith("```"):
         raw = raw[:-3]
     parsed = json.loads(raw.strip())
-    
-    # Model cevabı liste içinde döndürdüyse ilk elemanı al
     if isinstance(parsed, list) and len(parsed) > 0:
         parsed = parsed[0]
     return parsed if isinstance(parsed, dict) else {}
+
+def generate_outfit(wardrobe_items: list, key: str, pinned_item_id: str = None, occasion: str = "Günlük", weather: str = "Ilıman"):
+    client = genai.Client(api_key=key)
+    
+    # Modele sadece metin özetini yolluyoruz (sıfıra yakın maliyet ve hız için)
+    clean_items = [
+        {
+            "id": it["id"],
+            "name": it["item_name"],
+            "category": it["category"],
+            "color": it["color"],
+            "style": it["style"],
+            "season": it["season"],
+            "fit": it["fit"]
+        }
+        for it in wardrobe_items
+    ]
+    
+    prompt = f"""
+    Sen uzman bir stil danışmanısın. Kullanıcının gardırobundaki parçaları kullanarak harika bir kombin yap.
+    
+    Mevcut Gardırop:
+    {json.dumps(clean_items, ensure_ascii=False)}
+    
+    Kriterler:
+    - Ortam/Etkinlik: {occasion}
+    - Hava Durumu: {weather}
+    - Kesinlikle Dahil Edilmesi Gereken Parça ID'si: {pinned_item_id if pinned_item_id else "Yok (tamamen serbestsin)"}
+    
+    Renk uyumuna, katmanlamaya ve kalıplara dikkat et.
+    Sadece ve sadece aşağıdaki JSON formatında yanıt ver:
+    {{
+      "selected_item_ids": ["seçilen_parça_id_1", "seçilen_parça_id_2"],
+      "explanation": "Bu kombini neden seçtiğinin, renk ve tarz uyumunun 2-3 cümlelik açıklaması."
+    }}
+    """
+    
+    response = client.models.generate_content(
+        model="gemini-3.1-flash-lite",
+        contents=[prompt],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json"
+        )
+    )
+    raw = response.text.strip()
+    if raw.startswith("```json"):
+        raw = raw[7:]
+    if raw.endswith("```"):
+        raw = raw[:-3]
+    return json.loads(raw.strip())
 
 st.title("Dijital Gardırop")
 
@@ -72,7 +120,7 @@ if "current_image" not in st.session_state:
 if "analyzed_data" not in st.session_state:
     st.session_state["analyzed_data"] = None
 
-tab_add, tab_wardrobe = st.tabs(["Kıyafet Ekle", "Gardırobum"])
+tab_add, tab_wardrobe, tab_outfit = st.tabs(["Kıyafet Ekle", "Gardırobum", "Kombin Yap"])
 
 with tab_add:
     st.subheader("Yeni Kıyafet Yükle")
@@ -92,7 +140,6 @@ with tab_add:
                 except Exception as e:
                     st.error(f"Hata: {e}")
 
-    # Analiz verisi dict olarak geldiyse formu oluştur
     if isinstance(st.session_state["analyzed_data"], dict) and st.session_state["current_image"] is not None:
         st.divider()
         st.subheader("Bilgileri Doğrula & Kaydet")
@@ -168,3 +215,47 @@ with tab_wardrobe:
                     st.caption(f"Kategori: {it.get('category', '')} | Renk: {it.get('color', '')}")
                     st.caption(f"Tarz: {it.get('style', '')} | Kalıp: {it.get('fit', '')} | Mevsim: {it.get('season', '')}")
 
+with tab_outfit:
+    st.subheader("Kişisel Kombin Önerisi")
+    items = load_wardrobe()
+    
+    if len(items) < 2:
+        st.info("Kombin üretebilmek için gardırobuna en az 2 farklı parça eklemelisin.")
+    else:
+        col_opt1, col_opt2 = st.columns(2)
+        with col_opt1:
+            occasion = st.selectbox("Ortam / Plan", ["Günlük / Okul", "Streetwear / Rahat", "Akşam Dışarı Çıkma", "Spor", "Şık / Randevu"])
+        with col_opt2:
+            weather = st.selectbox("Hava Durumu", ["Ilıman / Mevsimlik", "Sıcak / Güneşli", "Soğuk / Yağmurlu", "Rüzgarlı"])
+
+        item_options = {"Seçim Yok (Hepsini AI seçsin)": None}
+        for it in items:
+            item_options[f"{it['item_name']} ({it['category']})"] = it["id"]
+
+        pinned_choice = st.selectbox("Kombinde Kesinlikle Olmasını İstediğin Parça (Opsiyonel):", list(item_options.keys()))
+        pinned_id = item_options[pinned_choice]
+
+        if st.button("Kombin Üret", type="primary"):
+            with st.spinner("Gardırobun taranıyor ve en uyumlu parçalar seçiliyor..."):
+                try:
+                    outfit_res = generate_outfit(items, api_key, pinned_id, occasion, weather)
+                    selected_ids = outfit_res.get("selected_item_ids", [])
+                    explanation = outfit_res.get("explanation", "")
+
+                    st.markdown("### Önerilen Kombin")
+                    st.write(f"💡 **Stil Yorumu:** {explanation}")
+
+                    matched_items = [it for it in items if it["id"] in selected_ids]
+                    
+                    if matched_items:
+                        cols = st.columns(len(matched_items))
+                        for idx, m_item in enumerate(matched_items):
+                            with cols[idx]:
+                                if os.path.exists(m_item.get("image_path", "")):
+                                    st.image(m_item["image_path"], use_container_width=True)
+                                st.caption(f"**{m_item['item_name']}**")
+                                st.caption(f"{m_item['category']} - {m_item['color']}")
+                    else:
+                        st.warning("Eşleşen parça görseli bulunamadı.")
+                except Exception as e:
+                    st.error(f"Kombin oluşturulurken hata: {e}")
