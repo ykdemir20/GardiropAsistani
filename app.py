@@ -166,4 +166,5 @@ with tab_wardrobe:
                 with col_info:
                     st.markdown(f"**{it.get('item_name', '')}**")
                     st.caption(f"Kategori: {it.get('category', '')} | Renk: {it.get('color', '')}")
-                    st.caption(f"Tarz:
+                    st.caption(f"Tarz: {it.get('style', '')} | Kalıp: {it.get('fit', '')} | Mevsim: {it.get('season', '')}")
+
