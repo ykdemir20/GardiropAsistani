@@ -25,6 +25,15 @@ def save_to_wardrobe_batch(new_items):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(wardrobe, f, ensure_ascii=False, indent=2)
 
+def update_wardrobe_item(updated_item):
+    wardrobe = load_wardrobe()
+    for idx, it in enumerate(wardrobe):
+        if it.get("id") == updated_item.get("id"):
+            wardrobe[idx] = updated_item
+            break
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(wardrobe, f, ensure_ascii=False, indent=2)
+
 def delete_from_wardrobe(item_id):
     wardrobe = load_wardrobe()
     item_to_remove = next((it for it in wardrobe if it.get("id") == item_id), None)
@@ -159,6 +168,13 @@ if not api_key:
 
 if "detected_items" not in st.session_state:
     st.session_state["detected_items"] = []
+if "editing_id" not in st.session_state:
+    st.session_state["editing_id"] = None
+
+categories = ["Üst Giyim", "Alt Giyim", "Dış Giyim", "Ayakkabı", "Aksesuar"]
+styles = ["Casual", "Streetwear", "Smart Casual", "Spor"]
+seasons = ["Mevsimlik", "Yazlık", "Kışlık"]
+fits = ["Regular", "Oversize", "Slim Fit", "Baggy"]
 
 tab_add, tab_wardrobe, tab_outfit = st.tabs(["Kıyafet Ekle", "Gardırobum", "Kombin Yap"])
 
@@ -208,14 +224,7 @@ with tab_add:
     if len(st.session_state["detected_items"]) > 0:
         st.divider()
         st.subheader(f"Onay Bekleyen Parçalar ({len(st.session_state['detected_items'])} adet)")
-        st.caption("Yanlış veya gereksiz algılanan parçaları 'Bu Parçayı Çıkar' butonuyla silebilirsin.")
 
-        categories = ["Üst Giyim", "Alt Giyim", "Dış Giyim", "Ayakkabı", "Aksesuar"]
-        styles = ["Casual", "Streetwear", "Smart Casual", "Spor"]
-        seasons = ["Mevsimlik", "Yazlık", "Kışlık"]
-        fits = ["Regular", "Oversize", "Slim Fit", "Baggy"]
-
-        # Her parçayı kart içinde gösterip anında çıkarma imkanı tanıyoruz
         items_to_remove = []
         for i, itm in enumerate(st.session_state["detected_items"]):
             with st.container(border=True):
@@ -251,7 +260,6 @@ with tab_add:
                         itm["season"] = st.selectbox("Mevsim", seasons, index=season_idx, key=f"se_{itm['temp_id']}")
                         itm["fit"] = st.selectbox("Kalıp", fits, index=fit_idx, key=f"f_{itm['temp_id']}")
 
-        # Çıkarılan parçaları listeden düş ve ekranı yenile
         if items_to_remove:
             st.session_state["detected_items"] = [
                 it for it in st.session_state["detected_items"] if it["temp_id"] not in items_to_remove
@@ -285,7 +293,7 @@ with tab_wardrobe:
     else:
         for it in reversed(items):
             with st.container(border=True):
-                col_img, col_info, col_del = st.columns([1, 2, 0.7])
+                col_img, col_info, col_actions = st.columns([1, 2, 0.8])
                 with col_img:
                     if os.path.exists(it.get("image_path", "")):
                         st.image(it["image_path"], use_container_width=True)
@@ -295,10 +303,65 @@ with tab_wardrobe:
                     st.markdown(f"**{it.get('item_name', '')}**")
                     st.caption(f"Kategori: {it.get('category', '')} | Renk: {it.get('color', '')}")
                     st.caption(f"Tarz: {it.get('style', '')} | Kalıp: {it.get('fit', '')} | Mevsim: {it.get('season', '')}")
-                with col_del:
+                with col_actions:
+                    if st.session_state["editing_id"] == it.get("id"):
+                        if st.button("Vazgeç", key=f"cancel_{it.get('id')}"):
+                            st.session_state["editing_id"] = None
+                            st.rerun()
+                    else:
+                        if st.button("Düzenle", key=f"edit_{it.get('id')}"):
+                            st.session_state["editing_id"] = it.get("id")
+                            st.rerun()
+
                     if st.button("Sil", key=f"del_{it.get('id')}"):
                         delete_from_wardrobe(it.get("id"))
+                        if st.session_state["editing_id"] == it.get("id"):
+                            st.session_state["editing_id"] = None
                         st.rerun()
+
+                # Düzenleme Modu Formu
+                if st.session_state["editing_id"] == it.get("id"):
+                    st.divider()
+                    st.markdown("✏️ **Parçayı Güncelle**")
+                    
+                    cur_cat = it.get("category", "")
+                    cur_cat_idx = categories.index(cur_cat) if cur_cat in categories else 0
+                    
+                    cur_style = it.get("style", "")
+                    cur_style_idx = styles.index(cur_style) if cur_style in styles else 0
+                    
+                    cur_season = it.get("season", "")
+                    cur_season_idx = seasons.index(cur_season) if cur_season in seasons else 0
+                    
+                    cur_fit = it.get("fit", "")
+                    cur_fit_idx = fits.index(cur_fit) if cur_fit in fits else 0
+
+                    with st.form(f"edit_form_{it.get('id')}"):
+                        new_name = st.text_input("İsim", value=it.get("item_name", ""))
+                        ec1, ec2 = st.columns(2)
+                        with ec1:
+                            new_cat = st.selectbox("Kategori", categories, index=cur_cat_idx)
+                            new_color = st.text_input("Renk", value=it.get("color", ""))
+                            new_fit = st.selectbox("Kalıp", fits, index=cur_fit_idx)
+                        with ec2:
+                            new_style = st.selectbox("Tarz", styles, index=cur_style_idx)
+                            new_season = st.selectbox("Mevsim", seasons, index=cur_season_idx)
+
+                        if st.form_submit_button("Güncelle ve Kaydet", type="primary"):
+                            updated_item = {
+                                "id": it.get("id"),
+                                "item_name": new_name,
+                                "category": new_cat,
+                                "color": new_color,
+                                "style": new_style,
+                                "season": new_season,
+                                "fit": new_fit,
+                                "image_path": it.get("image_path")
+                            }
+                            update_wardrobe_item(updated_item)
+                            st.session_state["editing_id"] = None
+                            st.success("Kıyafet bilgileri güncellendi!")
+                            st.rerun()
 
 with tab_outfit:
     st.subheader("Kişisel Kombin Önerisi")
