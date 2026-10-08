@@ -27,8 +27,26 @@ def save_to_wardrobe(item):
 
 def analyze_clothing(image: Image.Image, api_key: str):
     client = genai.Client(api_key=api_key)
-    available = [m.name for m in client.models.list() if "generateContent" in getattr(m, "supported_actions", [])]
-    raise Exception(f"Hesabındaki Modeller: {', '.join(available)}")
+    prompt = """
+    Bu fotoğraftaki kıyafeti analiz et ve STRICT şekilde aşağıdaki JSON formatında döndür:
+    {
+      "category": "Üst Giyim" | "Alt Giyim" | "Dış Giyim" | "Ayakkabı" | "Aksesuar",
+      "item_name": "Kıyafetin kısa adı (örn: Kahverengi Fermuarlı Ceket)",
+      "color": "Ana renk",
+      "style": "Streetwear" | "Casual" | "Smart Casual" | "Spor",
+      "season": "Yazlık" | "Kışlık" | "Mevsimlik",
+      "fit": "Oversize" | "Regular" | "Slim Fit" | "Baggy"
+    }
+    """
+    response = client.models.generate_content(
+        model="gemini-flash-latest",
+        contents=[image, prompt],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json"
+        )
+    )
+    return json.loads(response.text)
+
 
 
 st.title("Dijital Gardırop")
