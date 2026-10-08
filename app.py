@@ -28,15 +28,19 @@ def save_to_wardrobe(item):
 def analyze_clothing(img: Image.Image, key: str):
     client = genai.Client(api_key=key)
     prompt = """
-    Bu fotoğraftaki kıyafeti analiz et ve STRICT şekilde sadece aşağıdaki JSON formatında tek bir nesne olarak döndür:
-    {
-      "category": "Üst Giyim" | "Alt Giyim" | "Dış Giyim" | "Ayakkabı" | "Aksesuar",
-      "item_name": "Kıyafetin kısa adı (örn: Kahverengi Ceket)",
-      "color": "Ana renk",
-      "style": "Streetwear" | "Casual" | "Smart Casual" | "Spor",
-      "season": "Yazlık" | "Kışlık" | "Mevsimlik",
-      "fit": "Oversize" | "Regular" | "Slim Fit" | "Baggy"
-    }
+    Bu fotoğrafta görünen TÜM kıyafet ve aksesuar parçalarını (üst giyim, alt giyim, dış giyim, ayakkabı, şapka/çanta vb.) ayrı ayrı tespit et.
+    Her bir parçayı STRICT şekilde aşağıdaki JSON formatında bir LISTE olarak döndür:
+    [
+      {
+        "category": "Üst Giyim" | "Alt Giyim" | "Dış Giyim" | "Ayakkabı" | "Aksesuar",
+        "item_name": "Kıyafetin kısa ve belirgin adı (örn: Gri Kapüşonlu Sweatshirt)",
+        "color": "Ana renk",
+        "style": "Streetwear" | "Casual" | "Smart Casual" | "Spor",
+        "season": "Yazlık" | "Kışlık" | "Mevsimlik",
+        "fit": "Oversize" | "Regular" | "Slim Fit" | "Baggy"
+      }
+    ]
+    Eğer fotoğrafta sadece tek bir kıyafet varsa, yine de liste içinde tek bir eleman olarak döndür.
     """
     response = client.models.generate_content(
         model="gemini-3.1-flash-lite",
@@ -51,14 +55,16 @@ def analyze_clothing(img: Image.Image, key: str):
     if raw.endswith("```"):
         raw = raw[:-3]
     parsed = json.loads(raw.strip())
-    if isinstance(parsed, list) and len(parsed) > 0:
-        parsed = parsed[0]
-    return parsed if isinstance(parsed, dict) else {}
+    
+    # Her ihtimale karşı tek obje geldiyse listeye çevir
+    if isinstance(parsed, dict):
+        return [parsed]
+    elif isinstance(parsed, list):
+        return parsed
+    return []
 
 def generate_outfit(wardrobe_items: list, key: str, pinned_item_id: str = None, occasion: str = "Günlük", weather: str = "Ilıman"):
     client = genai.Client(api_key=key)
-    
-    # Modele sadece metin özetini yolluyoruz (sıfıra yakın maliyet ve hız için)
     clean_items = [
         {
             "id": it["id"],
@@ -73,7 +79,7 @@ def generate_outfit(wardrobe_items: list, key: str, pinned_item_id: str = None, 
     ]
     
     prompt = f"""
-    Sen uzman bir stil danışmanısın. Kullanıcının gardırobundaki parçaları kullanarak harika bir kombin yap.
+    Sen uzman bir stil danışmanısın. Kullanıcının gardırobundaki parçaları kullanarak uyumlu bir kombin yap.
     
     Mevcut Gardırop:
     {json.dumps(clean_items, ensure_ascii=False)}
@@ -117,8 +123,8 @@ if not api_key:
 
 if "current_image" not in st.session_state:
     st.session_state["current_image"] = None
-if "analyzed_data" not in st.session_state:
-    st.session_state["analyzed_data"] = None
+if "analyzed_items" not in st.session_state:
+    st.session_state["analyzed_items"] = None
 
 tab_add, tab_wardrobe, tab_outfit = st.tabs(["Kıyafet Ekle", "Gardırobum", "Kombin Yap"])
 
@@ -130,71 +136,85 @@ with tab_add:
         st.session_state["current_image"] = Image.open(uploaded_file)
 
     if st.session_state["current_image"] is not None:
-        st.image(st.session_state["current_image"], caption="Yüklenen Parça", use_container_width=True)
+        st.image(st.session_state["current_image"], caption="Yüklenen Fotoğraf", use_container_width=True)
 
-        if st.button("Gemini ile Analiz Et", type="primary"):
-            with st.spinner("Kıyafet analiz ediliyor..."):
+        if st.button("Fotoğrafı Analiz Et", type="primary"):
+            with st.spinner("Fotoğraftaki parçalar ayrıştırılıyor..."):
                 try:
                     res = analyze_clothing(st.session_state["current_image"], api_key)
-                    st.session_state["analyzed_data"] = res
+                    st.session_state["analyzed_items"] = res
                 except Exception as e:
                     st.error(f"Hata: {e}")
 
-    if isinstance(st.session_state["analyzed_data"], dict) and st.session_state["current_image"] is not None:
+    # Tespit edilen parçaları liste halinde onaylatma
+    if st.session_state["analyzed_items"] and st.session_state["current_image"] is not None:
         st.divider()
-        st.subheader("Bilgileri Doğrula & Kaydet")
-        data = st.session_state["analyzed_data"]
+        st.subheader(f"Tespit Edilen Parçalar ({len(st.session_state['analyzed_items'])} adet)")
+        st.caption("Kaydetmek istemediğin parçaları silebilir veya düzenleyebilirsin.")
 
         categories = ["Dış Giyim", "Üst Giyim", "Alt Giyim", "Ayakkabı", "Aksesuar"]
         styles = ["Casual", "Streetwear", "Smart Casual", "Spor"]
         seasons = ["Mevsimlik", "Yazlık", "Kışlık"]
         fits = ["Regular", "Oversize", "Slim Fit", "Baggy"]
 
-        raw_cat = str(data.get("category", ""))
-        cat_idx = categories.index(raw_cat) if raw_cat in categories else 0
+        with st.form("bulk_save_form"):
+            updated_items = []
+            for idx, data in enumerate(st.session_state["analyzed_items"]):
+                st.markdown(f"#### Parça {idx + 1}")
+                col1, col2 = st.columns(2)
+                
+                raw_cat = str(data.get("category", ""))
+                cat_idx = categories.index(raw_cat) if raw_cat in categories else 0
+                raw_style = str(data.get("style", ""))
+                style_idx = styles.index(raw_style) if raw_style in styles else 0
+                raw_season = str(data.get("season", ""))
+                season_idx = seasons.index(raw_season) if raw_season in seasons else 0
+                raw_fit = str(data.get("fit", ""))
+                fit_idx = fits.index(raw_fit) if raw_fit in fits else 0
 
-        raw_style = str(data.get("style", ""))
-        style_idx = styles.index(raw_style) if raw_style in styles else 0
+                with col1:
+                    name_val = st.text_input(f"İsim #{idx+1}", value=str(data.get("item_name", "Kıyafet")), key=f"name_{idx}")
+                    cat_val = st.selectbox(f"Kategori #{idx+1}", categories, index=cat_idx, key=f"cat_{idx}")
+                    col_val = st.text_input(f"Renk #{idx+1}", value=str(data.get("color", "")), key=f"col_{idx}")
+                with col2:
+                    style_val = st.selectbox(f"Tarz #{idx+1}", styles, index=style_idx, key=f"style_{idx}")
+                    season_val = st.selectbox(f"Mevsim #{idx+1}", seasons, index=season_idx, key=f"seas_{idx}")
+                    fit_val = st.selectbox(f"Kalıp #{idx+1}", fits, index=fit_idx, key=f"fit_{idx}")
 
-        raw_season = str(data.get("season", ""))
-        season_idx = seasons.index(raw_season) if raw_season in seasons else 0
+                updated_items.append({
+                    "item_name": name_val,
+                    "category": cat_val,
+                    "color": col_val,
+                    "style": style_val,
+                    "season": season_val,
+                    "fit": fit_val
+                })
+                st.write("---")
 
-        raw_fit = str(data.get("fit", ""))
-        fit_idx = fits.index(raw_fit) if raw_fit in fits else 0
+            save_all_btn = st.form_submit_button("Tüm Parçaları Gardıroba Ekle")
 
-        with st.form("save_form"):
-            item_name = st.text_input("Parça İsmi", value=str(data.get("item_name", "Kıyafet")))
-            col1, col2 = st.columns(2)
-            with col1:
-                category = st.selectbox("Kategori", categories, index=cat_idx)
-                color = st.text_input("Ana Renk", value=str(data.get("color", "")))
-                fit = st.selectbox("Kalıp", fits, index=fit_idx)
-            with col2:
-                style = st.selectbox("Tarz", styles, index=style_idx)
-                season = st.selectbox("Mevsim", seasons, index=season_idx)
-
-            save_btn = st.form_submit_button("Gardıroba Kaydet")
-
-            if save_btn:
+            if save_all_btn:
                 os.makedirs("clothing_images", exist_ok=True)
                 img_id = str(uuid.uuid4())[:8]
                 saved_path = f"clothing_images/{img_id}.png"
                 st.session_state["current_image"].save(saved_path)
 
-                final_item = {
-                    "id": img_id,
-                    "item_name": item_name,
-                    "category": category,
-                    "color": color,
-                    "style": style,
-                    "season": season,
-                    "fit": fit,
-                    "image_path": saved_path
-                }
-                save_to_wardrobe(final_item)
-                st.session_state["analyzed_data"] = None
+                for item in updated_items:
+                    final_item = {
+                        "id": str(uuid.uuid4())[:8],
+                        "item_name": item["item_name"],
+                        "category": item["category"],
+                        "color": item["color"],
+                        "style": item["style"],
+                        "season": item["season"],
+                        "fit": item["fit"],
+                        "image_path": saved_path
+                    }
+                    save_to_wardrobe(final_item)
+
+                st.session_state["analyzed_items"] = None
                 st.session_state["current_image"] = None
-                st.success(f"'{item_name}' başarıyla gardıroba eklendi!")
+                st.success(f"{len(updated_items)} parça gardıroba başarıyla kaydedildi!")
 
 with tab_wardrobe:
     st.subheader("Kayıtlı Parçalar")
