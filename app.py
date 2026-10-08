@@ -48,39 +48,60 @@ def delete_from_wardrobe(item_id):
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(updated, f, ensure_ascii=False, indent=2)
 
-def analyze_single_image(img: Image.Image, key: str, mode: str):
+def analyze_single_image(img: Image.Image, key: str, mode: str, known_items: list):
     client = genai.Client(api_key=key)
     
+    known_summary = [
+        f"- {it.get('category')}: {it.get('item_name')} ({it.get('color')}, {it.get('fit', '')})"
+        for it in known_items
+    ]
+    known_str = "\n".join(known_summary) if known_summary else "Henüz kayıtlı parça yok."
+
     if mode == "Tek Parça":
-        prompt = """
+        prompt = f"""
         Görseldeki MERKEZDE yer alan ANA KIYAFETİ analiz et.
-        Arka plandaki zemin, mobilya, askılık gibi nesneleri KESİNLİKLE YOK SAY.
-        Yanıtı STRICT şekilde bir JSON listesi olarak döndür:
+        Arka plandaki mobilya, yatak, zemin, askılık gibi ilgisiz nesneleri KESİNLİKLE YOK SAY.
+
+        MEVCUT GARDIROP VE YENİ TESPİT EDİLEN PARÇALAR:
+        {known_str}
+
+        KRİTİK KURAL (MÜKERRER KONTROLÜ):
+        Fotoğraftaki kıyafet yukarıdaki listede yer alan bir parça ile AYNI veya ÇOK BENZER ise (örneğin listede zaten 'Siyah Kargo Pantolon' varken fotoğrafta yine o varsa), bu kıyafeti listeye EKLEME ve boş liste [] döndür.
+        Sadece ve sadece listede henüz OLMAYAN, YENİ bir parçaysa aşağıdaki JSON formatında tek elemanlı liste döndür:
         [
-          {
+          {{
             "category": "Üst Giyim" | "Alt Giyim" | "Dış Giyim" | "Ayakkabı" | "Aksesuar",
             "item_name": "Kıyafetin kısa adı",
             "color": "Ana renk",
             "style": "Streetwear" | "Casual" | "Smart Casual" | "Spor",
             "season": "Yazlık" | "Kışlık" | "Mevsimlik",
             "fit": "Oversize" | "Regular" | "Slim Fit" | "Baggy"
-          }
+          }}
         ]
         """
     else:
-        prompt = """
-        Bu fotoğrafta kişinin ÜZERİNDE GİYİLİ olan parçaları (Üst, Alt, Dış Giyim, Ayakkabı) tespit et.
-        Arka plandaki oda eşyalarını, mobilyaları ASLA alma. Sadece giyilen gerçek kıyafetleri al.
-        Her parçayı STRICT şekilde JSON listesi olarak döndür:
+        prompt = f"""
+        Bu fotoğrafta kişinin ÜZERİNDE GİYİLİ olan parçaları (Üst, Alt, Dış Giyim, Ayakkabı) analiz et.
+        Arka plandaki oda eşyalarını, aynayı, mobilyaları ASLA kıyafet sanma. Sadece giyilen gerçek kıyafetleri al.
+
+        MEVCUT GARDIROP VE YENİ TESPİT EDİLEN PARÇALAR:
+        {known_str}
+
+        KRİTİK KURAL (MÜKERRER KONTROLÜ):
+        Kişinin üzerindeki parçalardan herhangi biri yukarıdaki listede zaten VARSA (örneğin üzerindeki pantolon veya şort listedeki parça ile aynıysa), onu TEKRAR DÖNDÜRME, ATLA.
+        SADECE yukarıdaki listede henüz bulunmayan YENİ parçaları listeye ekle.
+        Fotoğraftaki tüm parçalar zaten listede mevcutsa boş liste [] döndür.
+
+        Yeni parçalar için format:
         [
-          {
+          {{
             "category": "Üst Giyim" | "Alt Giyim" | "Dış Giyim" | "Ayakkabı" | "Aksesuar",
             "item_name": "Kıyafetin kısa adı",
             "color": "Ana renk",
             "style": "Streetwear" | "Casual" | "Smart Casual" | "Spor",
             "season": "Yazlık" | "Kışlık" | "Mevsimlik",
             "fit": "Oversize" | "Regular" | "Slim Fit" | "Baggy"
-          }
+          }}
         ]
         """
         
@@ -197,6 +218,10 @@ with tab_add:
             st.session_state["detected_items"] = []
             os.makedirs("clothing_images", exist_ok=True)
             
+            # Halihazırda gardıroptaki parçaları referans havuzuna alıyoruz
+            existing_items = load_wardrobe()
+            known_pool = list(existing_items)
+            
             prog = st.progress(0)
             status = st.empty()
             
@@ -209,11 +234,14 @@ with tab_add:
                 img.save(saved_path)
                 
                 try:
-                    res_list = analyze_single_image(img, api_key, mode_str)
+                    # Mevcut havuzdaki parçaları prompt'a gönderiyoruz
+                    res_list = analyze_single_image(img, api_key, mode_str, known_pool)
                     for item in res_list:
                         item["temp_id"] = str(uuid.uuid4())[:8]
                         item["image_path"] = saved_path
                         st.session_state["detected_items"].append(item)
+                        # Bir sonraki fotoğrafta mükerrer çıkmasın diye havuza hemen ekliyoruz
+                        known_pool.append(item)
                 except Exception as e:
                     st.error(f"Hata: {e}")
                 
@@ -223,7 +251,8 @@ with tab_add:
 
     if len(st.session_state["detected_items"]) > 0:
         st.divider()
-        st.subheader(f"Onay Bekleyen Parçalar ({len(st.session_state['detected_items'])} adet)")
+        st.subheader(f"Onay Bekleyen Parçalar ({len(st.session_state['detected_items'])} yeni parça tespit edildi)")
+        st.caption("Aynı olan parçalar elendi. Yanlış algılanan varsa '❌ Çıkar' butonuyla silebilirsin.")
 
         items_to_remove = []
         for i, itm in enumerate(st.session_state["detected_items"]):
@@ -319,20 +348,16 @@ with tab_wardrobe:
                             st.session_state["editing_id"] = None
                         st.rerun()
 
-                # Düzenleme Modu Formu
                 if st.session_state["editing_id"] == it.get("id"):
                     st.divider()
                     st.markdown("✏️ **Parçayı Güncelle**")
                     
                     cur_cat = it.get("category", "")
                     cur_cat_idx = categories.index(cur_cat) if cur_cat in categories else 0
-                    
                     cur_style = it.get("style", "")
                     cur_style_idx = styles.index(cur_style) if cur_style in styles else 0
-                    
                     cur_season = it.get("season", "")
                     cur_season_idx = seasons.index(cur_season) if cur_season in seasons else 0
-                    
                     cur_fit = it.get("fit", "")
                     cur_fit_idx = fits.index(cur_fit) if cur_fit in fits else 0
 
