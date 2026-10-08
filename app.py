@@ -1,52 +1,84 @@
 import os
+import io
 import json
 import uuid
 import streamlit as st
 from PIL import Image
 from google import genai
 from google.genai import types
+from supabase import create_client, Client
 
 st.set_page_config(page_title="Gardırop Asistanı", layout="centered", initial_sidebar_state="collapsed")
 
-DATA_FILE = "wardrobe.json"
+# API ve Supabase Bağlantısı
+api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+supabase_url = st.secrets.get("SUPABASE_URL") or os.environ.get("SUPABASE_URL")
+supabase_key = st.secrets.get("SUPABASE_KEY") or os.environ.get("SUPABASE_KEY")
+
+if not api_key:
+    st.error("GEMINI_API_KEY bulunamadı. Streamlit Secrets'a ekleyin.")
+    st.stop()
+
+if not supabase_url or not supabase_key:
+    st.error("SUPABASE_URL veya SUPABASE_KEY bulunamadı. Streamlit Secrets'a ekleyin.")
+    st.stop()
+
+@st.cache_resource
+def get_supabase() -> Client:
+    return create_client(supabase_url, supabase_key)
+
+supabase = get_supabase()
 
 def load_wardrobe():
-    if not os.path.exists(DATA_FILE):
-        return []
     try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
+        res = supabase.table("wardrobe").select("*").order("created_at", desc=True).execute()
+        return res.data or []
+    except Exception as e:
+        st.error(f"Gardırop yüklenirken hata: {e}")
         return []
 
 def save_to_wardrobe_batch(new_items):
-    wardrobe = load_wardrobe()
-    wardrobe.extend(new_items)
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(wardrobe, f, ensure_ascii=False, indent=2)
+    try:
+        supabase.table("wardrobe").insert(new_items).execute()
+    except Exception as e:
+        st.error(f"Kayıt hatası: {e}")
 
 def update_wardrobe_item(updated_item):
-    wardrobe = load_wardrobe()
-    for idx, it in enumerate(wardrobe):
-        if it.get("id") == updated_item.get("id"):
-            wardrobe[idx] = updated_item
-            break
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(wardrobe, f, ensure_ascii=False, indent=2)
+    try:
+        supabase.table("wardrobe").update({
+            "item_name": updated_item.get("item_name"),
+            "category": updated_item.get("category"),
+            "color": updated_item.get("color"),
+            "style": updated_item.get("style"),
+            "season": updated_item.get("season"),
+            "fit": updated_item.get("fit")
+        }).eq("id", updated_item.get("id")).execute()
+    except Exception as e:
+        st.error(f"Güncelleme hatası: {e}")
 
-def delete_from_wardrobe(item_id):
-    wardrobe = load_wardrobe()
-    item_to_remove = next((it for it in wardrobe if it.get("id") == item_id), None)
-    if item_to_remove:
-        img_path = item_to_remove.get("image_path", "")
-        if img_path and os.path.exists(img_path):
-            try:
-                os.remove(img_path)
-            except Exception:
-                pass
-        updated = [it for it in wardrobe if it.get("id") != item_id]
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(updated, f, ensure_ascii=False, indent=2)
+def delete_from_wardrobe(item_id, image_url):
+    try:
+        # Storage'dan görseli sil
+        if image_url and "clothing-images/" in image_url:
+            file_name = image_url.split("clothing-images/")[-1].split("?")[0]
+            supabase.storage.from_("clothing-images").remove([file_name])
+        # Tablodan sil
+        supabase.table("wardrobe").delete().eq("id", item_id).execute()
+    except Exception as e:
+        st.error(f"Silme hatası: {e}")
+
+def upload_image_to_supabase(img: Image.Image) -> str:
+    img_byte_arr = io.BytesIO()
+    img.save(img_byte_arr, format='PNG')
+    img_bytes = img_byte_arr.getvalue()
+    
+    file_name = f"{uuid.uuid4().hex[:10]}.png"
+    supabase.storage.from_("clothing-images").upload(
+        path=file_name,
+        file=img_bytes,
+        file_options={"content-type": "image/png"}
+    )
+    return supabase.storage.from_("clothing-images").get_public_url(file_name)
 
 def analyze_single_image(img: Image.Image, key: str, mode: str, known_items: list):
     client = genai.Client(api_key=key)
@@ -141,7 +173,7 @@ def generate_outfit_alternatives(wardrobe_items: list, key: str, pinned_item_id:
     ]
     
     prompt = f"""
-    Sen uzman bir stil danışmanısın. Kullanıcının gardırobundaki parçaları kullanarak birbiriyle yarışabilecek, FARKLI havalarda 3 FARKLI KOMBİN ALTERNATİFİ hazırla (örneğin: 1. Alternatif daha rahat/casual, 2. Alternatif daha katmanlı/streetwear, 3. Alternatif daha sade veya şık).
+    Sen uzman bir stil danışmanısın. Kullanıcının gardırobundaki parçaları kullanarak 3 FARKLI KOMBİN ALTERNATİFİ hazırla.
     
     Mevcut Gardırop:
     {json.dumps(clean_items, ensure_ascii=False)}
@@ -149,29 +181,15 @@ def generate_outfit_alternatives(wardrobe_items: list, key: str, pinned_item_id:
     Kriterler:
     - Ortam/Etkinlik: {occasion}
     - Hava Durumu: {weather}
-    - Kesinlikle Dahil Edilmesi Gereken Parça ID'si: {pinned_item_id if pinned_item_id else "Yok (tamamen serbestsin)"}
+    - Sabit Parça ID'si: {pinned_item_id if pinned_item_id else "Yok"}
     
-    Kurallar:
-    - Eğer sabitlenmiş parça ID'si varsa, 3 kombinin üçünde de o parça mutlaka yer almalı.
-    - Her kombin mantıklı bir üst giyim ve alt giyim (varsa ayakkabı/dış giyim) içermeli.
-    - Renk uyumuna (toprak tonları, nötr tonlar, kontrast) ve kalıplara dikkat et.
-    - Yalnızca ve kesinlikle aşağıdaki JSON formatında yanıt ver:
+    JSON Formatı:
     {{
       "outfits": [
         {{
-          "title": "Kombin Başlığı (örn: Rahat Sokak Stili)",
+          "title": "Kombin Başlığı",
           "selected_item_ids": ["id_1", "id_2"],
-          "explanation": "Bu kombinin neden tercih edildiği ve stil yorumu (1-2 cümle)."
-        }},
-        {{
-          "title": "İkinci Kombin Başlığı",
-          "selected_item_ids": ["id_3", "id_4"],
-          "explanation": "Stil yorumu."
-        }},
-        {{
-          "title": "Üçüncü Kombin Başlığı",
-          "selected_item_ids": ["id_5", "id_6"],
-          "explanation": "Stil yorumu."
+          "explanation": "Kombin yorumu."
         }}
       ]
     }}
@@ -192,18 +210,6 @@ def generate_outfit_alternatives(wardrobe_items: list, key: str, pinned_item_id:
     return json.loads(raw.strip())
 
 st.title("Dijital Gardırop")
-
-api_key = None
-if "GEMINI_API_KEY" in st.secrets:
-    api_key = st.secrets["GEMINI_API_KEY"]
-elif "GEMINI_API_KEY" in os.environ:
-    api_key = os.environ["GEMINI_API_KEY"]
-else:
-    api_key = st.text_input("Gemini API Anahtarı", type="password")
-
-if not api_key:
-    st.info("Devam etmek için Gemini API anahtarınızı girin.")
-    st.stop()
 
 if "detected_items" not in st.session_state:
     st.session_state["detected_items"] = []
@@ -234,7 +240,6 @@ with tab_add:
         
         if st.button("Fotoğrafları Analiz Et", type="primary"):
             st.session_state["detected_items"] = []
-            os.makedirs("clothing_images", exist_ok=True)
             
             existing_items = load_wardrobe()
             known_pool = list(existing_items)
@@ -243,18 +248,17 @@ with tab_add:
             status = st.empty()
             
             for idx, f in enumerate(uploaded_files):
-                status.text(f"Analiz ediliyor ({idx + 1}/{len(uploaded_files)})...")
+                status.text(f"Analiz ediliyor ve buluta yükleniyor ({idx + 1}/{len(uploaded_files)})...")
                 img = Image.open(f)
                 
-                img_id = str(uuid.uuid4())[:8]
-                saved_path = f"clothing_images/{img_id}.png"
-                img.save(saved_path)
-                
                 try:
+                    # Görseli direkt Supabase Storage'a atıp URL'ini alıyoruz
+                    public_img_url = upload_image_to_supabase(img)
+                    
                     res_list = analyze_single_image(img, api_key, mode_str, known_pool)
                     for item in res_list:
-                        item["temp_id"] = str(uuid.uuid4())[:8]
-                        item["image_path"] = saved_path
+                        item["temp_id"] = uuid.uuid4().hex[:10]
+                        item["image_url"] = public_img_url
                         st.session_state["detected_items"].append(item)
                         known_pool.append(item)
                 except Exception as e:
@@ -266,8 +270,7 @@ with tab_add:
 
     if len(st.session_state["detected_items"]) > 0:
         st.divider()
-        st.subheader(f"Onay Bekleyen Parçalar ({len(st.session_state['detected_items'])} yeni parça tespit edildi)")
-        st.caption("Aynı olan parçalar elendi. Yanlış algılanan varsa '❌ Çıkar' butonuyla silebilirsin.")
+        st.subheader(f"Onay Bekleyen Parçalar ({len(st.session_state['detected_items'])} yeni parça)")
 
         items_to_remove = []
         for i, itm in enumerate(st.session_state["detected_items"]):
@@ -281,8 +284,8 @@ with tab_add:
 
                 col_prev, col_inputs = st.columns([1, 3])
                 with col_prev:
-                    if os.path.exists(itm.get("image_path", "")):
-                        st.image(itm["image_path"], use_container_width=True)
+                    if itm.get("image_url"):
+                        st.image(itm["image_url"], use_container_width=True)
 
                 with col_inputs:
                     raw_cat = str(itm.get("category", ""))
@@ -322,11 +325,11 @@ with tab_add:
                     "style": itm["style"],
                     "season": itm["season"],
                     "fit": itm["fit"],
-                    "image_path": itm["image_path"]
+                    "image_url": itm["image_url"]
                 })
             save_to_wardrobe_batch(final_save_list)
             st.session_state["detected_items"] = []
-            st.success(f"{len(final_save_list)} parça gardıroba başarıyla kaydedildi!")
+            st.success(f"{len(final_save_list)} parça Supabase'e kaydedildi!")
             st.rerun()
 
 with tab_wardrobe:
@@ -335,12 +338,12 @@ with tab_wardrobe:
     if not items:
         st.write("Henüz eklenmiş bir kıyafet yok.")
     else:
-        for it in reversed(items):
+        for it in items:
             with st.container(border=True):
                 col_img, col_info, col_actions = st.columns([1, 2, 0.8])
                 with col_img:
-                    if os.path.exists(it.get("image_path", "")):
-                        st.image(it["image_path"], use_container_width=True)
+                    if it.get("image_url"):
+                        st.image(it["image_url"], use_container_width=True)
                     else:
                         st.caption("Görsel yok")
                 with col_info:
@@ -358,7 +361,7 @@ with tab_wardrobe:
                             st.rerun()
 
                     if st.button("Sil", key=f"del_{it.get('id')}"):
-                        delete_from_wardrobe(it.get("id"))
+                        delete_from_wardrobe(it.get("id"), it.get("image_url"))
                         if st.session_state["editing_id"] == it.get("id"):
                             st.session_state["editing_id"] = None
                         st.rerun()
@@ -369,13 +372,10 @@ with tab_wardrobe:
                     
                     cur_cat = it.get("category", "")
                     cur_cat_idx = categories.index(cur_cat) if cur_cat in categories else 0
-                    
                     cur_style = it.get("style", "")
                     cur_style_idx = styles.index(cur_style) if cur_style in styles else 0
-                    
                     cur_season = it.get("season", "")
                     cur_season_idx = seasons.index(cur_season) if cur_season in seasons else 0
-                    
                     cur_fit = it.get("fit", "")
                     cur_fit_idx = fits.index(cur_fit) if cur_fit in fits else 0
 
@@ -398,8 +398,7 @@ with tab_wardrobe:
                                 "color": new_color,
                                 "style": new_style,
                                 "season": new_season,
-                                "fit": new_fit,
-                                "image_path": it.get("image_path")
+                                "fit": new_fit
                             }
                             update_wardrobe_item(updated_item)
                             st.session_state["editing_id"] = None
@@ -451,11 +450,9 @@ with tab_outfit:
                                     img_cols = st.columns(min(len(matched), 4))
                                     for c_idx, m_item in enumerate(matched):
                                         with img_cols[c_idx % 4]:
-                                            if os.path.exists(m_item.get("image_path", "")):
-                                                st.image(m_item["image_path"], use_container_width=True)
+                                            if m_item.get("image_url"):
+                                                st.image(m_item["image_url"], use_container_width=True)
                                             st.caption(f"**{m_item.get('item_name')}**")
                                             st.caption(f"{m_item.get('category')} - {m_item.get('color')}")
-                                else:
-                                    st.caption("Seçilen parçalar için görsel bulunamadı.")
                 except Exception as e:
                     st.error(f"Hata: {e}")
